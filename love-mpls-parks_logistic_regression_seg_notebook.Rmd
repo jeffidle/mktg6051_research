@@ -1,0 +1,336 @@
+---
+title: "LoveMplsParks customer segments and brand/product preference logistic regression and correlation analysis"
+output: html_notebook
+author: Jeff Idle
+editor_options: 
+  chunk_output_type: inline
+---
+
+This is a logistic regression and correlation analysis of survey results to assess linkages between LoveMplsParks customer segments and brand/product preferences.
+
+```{r echo = FALSE, warning=FALSE, message=FALSE}
+
+##########################
+# LOAD LIBRARIES
+##########################
+
+library(broom)
+library(caret)
+library(GGally)
+library(gt)
+library(MASS)
+library(tidyverse)
+library(vroom)
+library(wrapr)
+
+```
+
+
+```{r echo = FALSE, warning=FALSE, message=FALSE}
+
+##########################
+# DEFINE CUSTOM FUNCTIONS
+##########################
+
+
+# Summarize data function
+#---------------------------
+summarize_data <- function(df, column_name){
+        
+        temp_df <- data.frame(
+                
+                variable = column_name,
+                data_type = class(df[[column_name]]),
+                observation_count = length(df[[column_name]]),
+                missing_values = sum(is.na(df[[column_name]])),
+                minimum_value = min(df[[column_name]], na.rm = TRUE),
+                median_value = quantile(df[[column_name]], probs = 0.5),
+                mean_value = mean(df[[column_name]], na.rm = TRUE),
+                maximum_value = max(df[[column_name]], na.rm = TRUE),
+                std_dev = sd(df[[column_name]], na.rm = TRUE),
+                lower_quartile = quantile(df[[column_name]], probs = 0.25),
+                upper_quartile = quantile(df[[column_name]], probs = 0.75)
+                
+        )
+        
+        temp_df <- temp_df %>%
+                mutate(range = maximum_value - minimum_value,
+                       inner_quartile_range = upper_quartile - lower_quartile,
+                       outlier_threshold_3iqr = (inner_quartile_range * 3) + upper_quartile,
+                       outlier_count = sum(df[[column_name]] > outlier_threshold_3iqr),
+                       outlier_pct = outlier_count / observation_count)
+        
+        return(temp_df)
+        
+}
+
+
+# Function for extracting logistic regression formula from logistic model output
+#------------------------------------------------------------------------------
+logistic_formula_fx <- function(tidy_model, dependent_variable){
+        
+        df <- tidy_model %>%
+                arrange(term) %>%
+                mutate(formula_component = ifelse(term == "(Intercept)", estimate, paste0(estimate, "*", term)))
+        
+        logistic_formula <- paste0(df$formula_component, collapse = " + ")
+        
+        logistic_formula <- paste0("logistic regression formula:  ", dependent_variable, " = ", logistic_formula)
+        
+        return(logistic_formula)
+        
+}
+
+
+# 2-variable regression comparison that extracts key info
+# Extract formula, model Adjusted R-square, Standard Error, Coefficient and P-value for each independent variable
+#-------------------------------------------------------------------------------------------------------------------
+paired_regression_fx <- function(df, dependent_variable, independent_variable_tgt){
+        
+        model_glm <- glm(df[[dependent_variable]] ~ df[[independent_variable_tgt]], data = df, family = binomial)
+        
+        m_aic <- summary(model_glm)$aic
+        
+        tidy_model_glm <- tidy(model_glm)
+        
+        tidy_model_glm <- tidy_model_glm %>%
+                mutate(independent_variable = independent_variable_tgt,
+                       model_aic = m_aic)
+
+        intercept_value <- unlist(tidy_model_glm[tidy_model_glm$term == "(Intercept)", "estimate"])
+
+        tidy_model_glm <- subset(tidy_model_glm, term != "(Intercept)")
+
+        names(tidy_model_glm) <- c("term", "coefficient", "model_standard_error", "t_statistic", "p_value", "independent_variable", "model_aic")
+
+        tidy_model_glm <- tidy_model_glm %>%
+                mutate(term = gsub(".*]","", term),
+                       intercept_value = intercept_value,
+                       independent_variable = independent_variable_tgt,
+                       formula = paste0(dependent_variable, " = ", intercept_value, " + ", coefficient, "*", independent_variable))
+        
+        tidy_model_glm <- tidy_model_glm %>%
+                select(independent_variable, model_aic, intercept_value, term, model_standard_error,
+                       coefficient, t_statistic, p_value, formula)
+        
+        return(tidy_model_glm)
+        
+}
+
+
+```
+
+
+
+```{r echo = FALSE, warning=FALSE, message=FALSE}
+
+##########################
+# LOAD AND LABEL DATA
+##########################
+setwd('C:/Users/jidle1975/Documents/R/MKTG_6051')
+data_df <- vroom("lmp_seg_data_regression_numeric.csv", progress = FALSE)
+row.names(data_df) <- data_df$prolific_id
+
+```
+
+
+```{r echo = FALSE, warning=FALSE, message=FALSE}
+
+##########################
+# REGRESSION DATA
+##########################
+
+data_r1n_df <- data_df %>%
+        select(lmp_customer_segment, park_run_walk, park_biking, park_skiing, park_team_sports,
+               park_family_pets, park_before_after_bar, park_before_after_meal, park_drink_coffee,
+               freq_buy_local_brands, freq_drink_alcohol, freq_drink_coffee_tea, brand_loyalty)
+
+ivar <- names(data_r1n_df[1])
+
+```
+
+
+
+```{r echo = FALSE, warning=FALSE, message=FALSE}
+
+##############################
+# GENERATE DATA SUMMARY TABLE
+##############################
+
+variable_list <- names(data_r1n_df)
+
+for(x in variable_list){
+        
+  tmp_df <- summarize_data(data_r1n_df, x)
+  
+  if(exists("data_summary_df")){
+          
+          data_summary_df <- bind_rows(data_summary_df, tmp_df)
+          
+  } else {
+          
+          data_summary_df <- tmp_df
+          
+  }
+        
+} 
+
+data_summary_df %>%
+        select(variable, data_type, observation_count, missing_values, minimum_value, median_value,
+               mean_value, maximum_value, outlier_count) %>%
+        gt() %>%
+        tab_header(title = "Figure 1:  Data summary") %>%
+        tab_options(table.width = pct(90), container.width = pct(90), table.font.size = 12) %>%
+        cols_label(variable = "Variable", data_type = "Data Type", observation_count = "# Observations", 
+                   missing_values = "# Missing", minimum_value = "Minimum", median_value = "Median",
+                   mean_value = "Mean", maximum_value = "Max", outlier_count = "# Outliers")
+        
+
+```
+
+```{r echo = FALSE, warning=FALSE}
+
+##########################################
+# CALCULATE CORRELATIONS AMONG VARIABLES
+# CHECK FOR COLLINEARITY
+##########################################
+
+corr_df <- as.data.frame(cor(data_r1n_df))
+
+corr_df <- tibble::rownames_to_column(corr_df, "var_name")
+
+corr_df %>%
+        gt() %>%
+        tab_header(title = "Figure 2:  Variable correlations") %>%
+        tab_options(table.width = pct(90), container.width = pct(90), table.font.size = 12)
+        #cols_label(variable = "Variable", data_type = "Data Type", observation_count = "# Observations",
+        #           missing_values = "# Missing", minimum_value = "Minimum", median_value = "Median",
+        #           mean_value = "Mean", maximum_value = "Max", outlier_count = "# Outliers")
+
+```
+
+
+```{r echo = FALSE, warning=FALSE}
+
+######################################################################
+# GENERATE MODELS FOR EACH INDEPENDENT/DEPENDENT VARIABLE COMBINATION
+# AND SUMMARIZE RESULTS IN A TABLE
+######################################################################
+
+independent_variable_list <- names(data_r1n_df[2:13])
+
+for(x in independent_variable_list){
+        
+  temp2_df <- paired_regression_fx(data_r1n_df, ivar, x)
+  
+  if(exists("sv_model_compare_df")){
+          
+          sv_model_compare_df <- bind_rows(sv_model_compare_df, temp2_df)
+          
+  } else {
+          
+          sv_model_compare_df <- temp2_df
+          
+  }
+        
+} 
+
+sv_model_compare_df %>%
+        gt() %>%
+        tab_header(title = "Figure 3:  Single independent variable model comparison",
+                   subtitle = "dependent variable = frequent park usage") %>%
+        tab_options(table.width = pct(95), container.width = pct(95), table.font.size = 9) %>%
+        cols_label(independent_variable = "Independent Variable", model_aic = "Model AIC", 
+                   intercept_value = "Intercept", term = "Term", 
+                   model_standard_error = "Model Standard Error", coefficient = "Beta",
+                   t_statistic = "t-statistic", p_value = "p-value", formula = "Formula")
+        
+
+```
+
+
+```{r echo = FALSE, warning=FALSE, message=FALSE}
+
+####################################################################
+# CREATE A MODEL THAT USES ALL INDEPENDENT VARIABLES IN THE DATASET
+# AND GENERATE MODEL OUTPUT
+####################################################################
+
+m_allvars <- glm(lmp_customer_segment ~., data = data_r1n_df, family = binomial)
+
+summary(m_allvars)
+
+```
+
+```{r echo = FALSE, warning=FALSE, message=FALSE}
+
+####################################################################
+# CREATE A MODEL THAT USES ALL INDEPENDENT VARIABLES IN THE DATASET
+# AND GENERATE MODEL OUTPUT
+####################################################################
+
+tidy_m_allvars <- tidy(m_allvars)
+
+logistic_formula_fx(tidy_m_allvars, "LoveMplsParks Customer Segment")
+
+```
+
+```{r echo = FALSE, warning=FALSE, message=FALSE}
+
+####################################################################
+# CREATE A MODEL THAT USES ALL INDEPENDENT VARIABLES IN THE DATASET
+# AND GENERATE MODEL OUTPUT
+####################################################################
+
+tidy_m_allvars <- tidy(m_allvars)
+
+tidy_m_allvars %>%
+        gt() %>%
+        tab_header(title = "Figure 4:  All independent variables model comparison",
+                   subtitle = "dependent variable = LoveMplsParks Customer Segment") %>%
+        tab_options(table.width = pct(95), container.width = pct(95), table.font.size = 9)
+
+```
+
+
+```{r echo = FALSE, warning=FALSE, message=FALSE}
+
+####################################################################
+# CREATE A MODEL THAT USES ALL INDEPENDENT VARIABLES IN THE DATASET
+# AND GENERATE MODEL OUTPUT
+####################################################################
+
+m_stepwise <- stepAIC(m_allvars, direction = "both", trace = FALSE)
+
+m_stepwise$anova
+
+```
+
+```{r echo = FALSE, warning=FALSE, message=FALSE}
+
+####################################################################
+# CREATE A MODEL THAT USES ALL INDEPENDENT VARIABLES IN THE DATASET
+# AND GENERATE MODEL OUTPUT
+####################################################################
+
+summary(m_stepwise)
+
+```
+
+
+```{r echo = FALSE, warning=FALSE, message=FALSE}
+
+####################################################################
+# CREATE A MODEL THAT USES ALL INDEPENDENT VARIABLES IN THE DATASET
+# AND GENERATE MODEL OUTPUT
+####################################################################
+
+tidy_m_stepwise <- tidy(m_stepwise)
+
+tidy_m_stepwise %>%
+        gt() %>%
+        tab_header(title = "Figure 5:  Stepwise-selected independent variables model comparison",
+                   subtitle = "dependent variable = LoveMplsParks Customer Segment") %>%
+        tab_options(table.width = pct(95), container.width = pct(95), table.font.size = 9)
+
+```
